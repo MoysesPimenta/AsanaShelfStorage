@@ -13,6 +13,30 @@ export function normalizeSerial(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
 
+/**
+ * Split a Serial Number field value into individual serials.
+ * Separators: newlines and commas. Semicolons are NOT separators because a
+ * serial may legitimately contain a ";". Blank tokens (from trailing/double
+ * separators) are dropped, but a non-empty token that simply isn't in the
+ * sheet is kept so it can produce an aligned blank line in the output.
+ */
+export function splitSerials(value: unknown): string[] {
+  return String(value ?? "")
+    .split(/[\r\n,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Look up shelves for one or more serials and join them, in input order, with
+ * newlines. A serial that isn't found contributes an empty string (blank line),
+ * keeping positions aligned with the serials. Returns "" when there are no
+ * serials at all.
+ */
+export function lookupShelvesJoined(rows: string[][], serials: string[]): string {
+  return serials.map((s) => lookupShelf(rows, s)).join("\n");
+}
+
 let cachedClient: ReturnType<typeof google.sheets> | null = null;
 
 function getSheetsClient() {

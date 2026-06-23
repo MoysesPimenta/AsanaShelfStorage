@@ -19,7 +19,7 @@ import {
   readTextFieldValue,
   updateTaskCustomField,
 } from "@/lib/asana";
-import { lookupShelf, readStockRows } from "@/lib/sheets";
+import { lookupShelvesJoined, readStockRows, splitSerials } from "@/lib/sheets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -128,27 +128,43 @@ async function processTask(taskGid: string, stockRows: string[][]): Promise<void
   const serialField = findCustomField(task, config.asana.serialFieldGid);
   const shelfField = findCustomField(task, config.asana.shelfFieldGid);
 
-  const serial = readTextFieldValue(serialField).trim();
+  // A task may carry one or several serials (newline/comma separated).
+  const serials = splitSerials(readTextFieldValue(serialField));
   const currentShelf = readTextFieldValue(shelfField);
 
-  if (!serial) {
+  if (serials.length === 0) {
     console.log(`[${SERVICE}] Task ${taskGid} skipped: Serial Number is empty.`);
     return;
   }
 
-  const newShelf = lookupShelf(stockRows, serial);
+  // One shelf per serial, in order, joined by newlines (blank line if missing).
+  const newShelf = lookupShelvesJoined(stockRows, serials);
 
-  if (newShelf === currentShelf) {
+  if (shelvesEqual(currentShelf, newShelf)) {
     console.log(
-      `[${SERVICE}] Task ${taskGid} skipped: Storage Shelf already correct ("${currentShelf}").`,
+      `[${SERVICE}] Task ${taskGid} skipped: Storage Shelf already correct ` +
+        `(${serials.length} serial(s)).`,
     );
     return;
   }
 
   await updateTaskCustomField(taskGid, config.asana.shelfFieldGid, newShelf);
   console.log(
-    `[${SERVICE}] Task ${taskGid} updated: serial="${serial}" shelf "${currentShelf}" -> "${newShelf}".`,
+    `[${SERVICE}] Task ${taskGid} updated: ${serials.length} serial(s) ` +
+      `[${serials.join(" | ")}] shelf ${JSON.stringify(currentShelf)} -> ${JSON.stringify(newShelf)}.`,
   );
+}
+
+/**
+ * Compare shelf values for the anti-loop guard. Exact match is the common case;
+ * the whitespace-insensitive fallback ensures that if Asana stores our
+ * newline-joined value with altered whitespace (e.g. spaces instead of line
+ * breaks), the next webhook is still treated as a no-op rather than looping.
+ */
+function shelvesEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  const stripWs = (s: string) => s.replace(/\s+/g, "");
+  return stripWs(a) === stripWs(b);
 }
 
 /** HMAC-SHA256 verification with a timing-safe comparison. */
