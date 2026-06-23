@@ -15,15 +15,23 @@ export function normalizeSerial(value: unknown): string {
 
 /**
  * Split a Serial Number field value into individual serials.
- * Separators: newlines and commas. Semicolons are NOT separators because a
- * serial may legitimately contain a ";". Blank tokens (from trailing/double
- * separators) are dropped, but a non-empty token that simply isn't in the
- * sheet is kept so it can produce an aligned blank line in the output.
+ *
+ * Entry separators: newlines and commas. Semicolons are NOT separators because
+ * a serial may legitimately contain a ";".
+ *
+ * Each entry may be written as "SERIAL - description" (e.g.
+ * "SH9Y3YLC37W - Iphones"), so we keep only the part BEFORE the first
+ * " - " / " – " / " — " (whitespace-dash-whitespace). A dash without surrounding
+ * spaces is preserved, so hyphenated serials like "ABC-123" stay intact.
+ *
+ * Blank tokens (from trailing/double separators) are dropped, but a non-empty
+ * serial that simply isn't in the sheet is kept so it can produce an aligned
+ * blank line in the output.
  */
 export function splitSerials(value: unknown): string[] {
   return String(value ?? "")
     .split(/[\r\n,]+/)
-    .map((s) => s.trim())
+    .map((entry) => entry.split(/\s[-–—]\s/)[0].trim())
     .filter((s) => s.length > 0);
 }
 
