@@ -6,11 +6,14 @@
 //      saved into Vercel as ASANA_WEBHOOK_SECRET.
 //   2. Subsequent event POSTs carry an X-Hook-Signature header (HMAC-SHA256 of
 //      the raw body using the secret). We verify it with a timing-safe compare.
-//   3. For each changed/added task we read its Serial Number, look up the
-//      matching shelf in Google Sheets (bottom-to-top), and write it into the
-//      Storage Shelf field - skipping no-ops to avoid an update loop.
+//   3. We ACK Asana immediately (its delivery timeout is 10s) and do the real
+//      work - sheet read + task read + field write - in the background via
+//      waitUntil. Doing the work inline used to blow the 10s budget, which put
+//      the webhook into Asana's exponential retry back-off and silently dropped
+//      events (shelves never got filled).
 
 import crypto from "node:crypto";
+import { waitUntil } from "@vercel/functions";
 import { config } from "@/lib/config";
 import {
   extractTaskGids,
@@ -23,8 +26,14 @@ import { lookupShelvesJoined, readStockRows, splitSerials } from "@/lib/sheets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Background processing runs after the response is sent but still counts
+// towards the function's wall clock, so give it room.
+export const maxDuration = 60;
 
 const SERVICE = "asana-shelf-sync";
+
+// How many tasks from one delivery are processed concurrently.
+const TASK_CONCURRENCY = 4;
 
 // ---------------------------------------------------------------------------
 // GET: health check
@@ -73,7 +82,7 @@ export async function POST(req: Request): Promise<Response> {
     return new Response("Invalid signature", { status: 401 });
   }
 
-  // --- 3. Process events --------------------------------------------------
+  // --- 3. Parse + hand off ------------------------------------------------
   let payload: { events?: unknown };
   try {
     payload = rawBody ? JSON.parse(rawBody) : {};
@@ -94,33 +103,49 @@ export async function POST(req: Request): Promise<Response> {
   );
 
   if (taskGids.length > 0) {
-    // Read the stock sheet once and reuse for every task in this batch.
-    let stockRows: string[][] | null = null;
-    try {
-      stockRows = await readStockRows();
-    } catch (err) {
-      console.error(`[${SERVICE}] Failed to read Google Sheet:`, errMessage(err));
-    }
-
-    if (stockRows) {
-      for (const gid of taskGids) {
-        try {
-          await processTask(gid, stockRows);
-        } catch (err) {
-          // One bad task must not crash processing for the rest.
-          console.error(`[${SERVICE}] Task ${gid} failed:`, errMessage(err));
-        }
-      }
-    }
+    // Never await here: Asana drops the delivery (and backs off) after 10s.
+    waitUntil(processBatch(taskGids));
   }
 
   // Always 200 so Asana does not disable the webhook for transient issues.
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, queued: taskGids.length });
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Background work
 // ---------------------------------------------------------------------------
+
+async function processBatch(taskGids: string[]): Promise<void> {
+  const startedAt = Date.now();
+
+  let stockRows: string[][];
+  try {
+    stockRows = await readStockRows();
+  } catch (err) {
+    console.error(`[${SERVICE}] Failed to read Google Sheet:`, errMessage(err));
+    return;
+  }
+
+  const queue = [...taskGids];
+  const workers = Array.from({ length: Math.min(TASK_CONCURRENCY, queue.length) }, async () => {
+    for (;;) {
+      const gid = queue.shift();
+      if (!gid) return;
+      try {
+        await processTask(gid, stockRows);
+      } catch (err) {
+        // One bad task must not stop the rest.
+        console.error(`[${SERVICE}] Task ${gid} failed:`, errMessage(err));
+      }
+    }
+  });
+  await Promise.all(workers);
+
+  console.log(
+    `[${SERVICE}] Batch of ${taskGids.length} task(s) done in ${Date.now() - startedAt}ms ` +
+      `(${stockRows.length} sheet rows).`,
+  );
+}
 
 async function processTask(taskGid: string, stockRows: string[][]): Promise<void> {
   const task = await getTask(taskGid);
@@ -133,7 +158,24 @@ async function processTask(taskGid: string, stockRows: string[][]): Promise<void
   const currentShelf = readTextFieldValue(shelfField);
 
   if (serials.length === 0) {
-    console.log(`[${SERVICE}] Task ${taskGid} skipped: Serial Number is empty.`);
+    // Diagnostic: show whether the serial field was found, its raw value, and
+    // every custom field on the task (name#gid=value) so we can locate where
+    // the serial actually lives if it isn't in the expected field.
+    const rawSerial = readTextFieldValue(serialField);
+    const fieldsDump = (task.custom_fields ?? [])
+      .map(
+        (f) =>
+          `${f.name ?? "?"}#${f.gid}=${JSON.stringify(
+            f.display_value ?? f.text_value ?? f.enum_value?.name ?? null,
+          )}`,
+      )
+      .join(" | ");
+    console.log(
+      `[${SERVICE}] Task ${taskGid} skipped: no serials parsed. ` +
+        `serialFieldGid=${config.asana.serialFieldGid} found=${Boolean(serialField)} ` +
+        `rawValue=${JSON.stringify(rawSerial)} | taskName=${JSON.stringify(task.name ?? null)} ` +
+        `| fields: ${fieldsDump}`,
+    );
     return;
   }
 
@@ -154,6 +196,10 @@ async function processTask(taskGid: string, stockRows: string[][]): Promise<void
       `[${serials.join(" | ")}] shelf ${JSON.stringify(currentShelf)} -> ${JSON.stringify(newShelf)}.`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Compare shelf values for the anti-loop guard. Exact match is the common case;
