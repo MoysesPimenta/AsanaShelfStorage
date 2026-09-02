@@ -63,51 +63,92 @@ function getSheetsClient() {
   return cachedClient;
 }
 
-// A single Asana action often produces several webhook deliveries within a few
-// seconds. Re-reading the whole stock tab for each one is the slowest step in
-// the pipeline, so keep the rows in module scope for a short window. The cache
-// lives per warm lambda instance; a stale window of 30s is well inside how fast
-// anyone can move a machine between shelves.
-const ROWS_TTL_MS = 30_000;
-let rowsCache: { rows: string[][]; at: number } | null = null;
-let rowsInFlight: Promise<string[][]> | null = null;
+// ---------------------------------------------------------------------------
+// Range handling
+// ---------------------------------------------------------------------------
+//
+// An open-ended range ("'Tab '!A:B") makes the API walk the sheet's whole grid,
+// which on this spreadsheet took ~113s per read - far beyond Asana's 10s
+// webhook budget and the reason shelves stopped being written at all. Bounding
+// the range keeps the read proportional to the data that actually exists.
+const MAX_ROWS = Number(process.env.GOOGLE_SHEET_MAX_ROWS ?? "20000") || 20000;
 
-/** Read the configured range. Returns rows of [serial, shelf]. */
-export async function readStockRows(force = false): Promise<string[][]> {
+/** "'Tab '!A:B" -> "'Tab '!A1:B20000". Ranges that already carry row numbers
+ *  (or that name no columns at all) are left untouched. */
+export function boundRange(range: string, maxRows = MAX_ROWS): string {
+  return range.replace(/!\s*([A-Z]+):([A-Z]+)\s*$/i, (_m, a, b) => `!${a}1:${b}${maxRows}`);
+}
+
+// ---------------------------------------------------------------------------
+// Cached read
+// ---------------------------------------------------------------------------
+//
+// A single Asana action produces several webhook deliveries within seconds, and
+// each Vercel instance would otherwise repeat the (slow) sheet read for every
+// one. Rows are kept per range in module scope and served stale while a refresh
+// runs in the background, so only the very first request on a cold instance
+// ever waits for Google.
+const FRESH_MS = Number(process.env.GOOGLE_SHEET_TTL_MS ?? "300000") || 300_000; // 5 min
+
+type CacheEntry = { rows: string[][]; at: number };
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<string[][]>>();
+
+async function fetchRows(range: string): Promise<string[][]> {
+  const started = Date.now();
+  const sheets = getSheetsClient();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: config.google.sheetId,
+    range,
+    valueRenderOption: "UNFORMATTED_VALUE",
+    majorDimension: "ROWS",
+    fields: "values",
+  });
+  const rows = (res.data.values as string[][]) ?? [];
+  cache.set(range, { rows, at: Date.now() });
+  console.log(`[sheets] read ${rows.length} row(s) from "${range}" in ${Date.now() - started}ms`);
+  return rows;
+}
+
+function refresh(range: string): Promise<string[][]> {
+  const existing = inFlight.get(range);
+  if (existing) return existing;
+  const promise = fetchRows(range).finally(() => {
+    if (inFlight.get(range) === promise) inFlight.delete(range);
+  });
+  inFlight.set(range, promise);
+  return promise;
+}
+
+/**
+ * Read the stock rows ([serial, shelf]).
+ *
+ * @param force  bypass the cache and wait for a fresh read
+ * @param rangeOverride  read a different A1 range (used by the backfill's
+ *                       ?range= probe when tuning the sheet read)
+ */
+export async function readStockRows(
+  force = false,
+  rangeOverride?: string,
+): Promise<string[][]> {
   if (!config.google.sheetId) {
     throw new Error("GOOGLE_SHEET_ID is not configured");
   }
-  if (!force && rowsCache && Date.now() - rowsCache.at < ROWS_TTL_MS) {
-    return rowsCache.rows;
-  }
-  // Collapse concurrent readers onto one API call.
-  if (!force && rowsInFlight) return rowsInFlight;
+  const range = boundRange(rangeOverride ?? config.google.sheetRange);
 
-  const started = Date.now();
-  const promise = (async () => {
-    const sheets = getSheetsClient();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.google.sheetId,
-      range: config.google.sheetRange,
-      valueRenderOption: "UNFORMATTED_VALUE",
-      majorDimension: "ROWS",
-    });
-    const rows = (res.data.values as string[][]) ?? [];
-    rowsCache = { rows, at: Date.now() };
-    console.log(
-      `[sheets] read ${rows.length} row(s) from "${config.google.sheetRange}" in ${
-        Date.now() - started
-      }ms`,
-    );
-    return rows;
-  })();
+  if (force) return refresh(range);
 
-  rowsInFlight = promise;
-  try {
-    return await promise;
-  } finally {
-    if (rowsInFlight === promise) rowsInFlight = null;
+  const entry = cache.get(range);
+  if (entry) {
+    // Stale-while-revalidate: never make a webhook wait on Google.
+    if (Date.now() - entry.at >= FRESH_MS) {
+      void refresh(range).catch((err) =>
+        console.error(`[sheets] background refresh failed:`, err?.message ?? err),
+      );
+    }
+    return entry.rows;
   }
+  return refresh(range);
 }
 
 /**

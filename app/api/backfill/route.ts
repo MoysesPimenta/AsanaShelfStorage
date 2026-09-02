@@ -15,10 +15,11 @@
 //        "https://project-dztb8.vercel.app/api/backfill?dry=1"
 //
 // Query params:
-//   dry=1    report what would change, write nothing
-//   clear=1  also blank shelves whose serials are no longer in the sheet
-//            (default: never blank a shelf, only fill/correct it)
-//   max=N    stop after N tasks (default 1000)
+//   dry=1     report what would change, write nothing
+//   clear=1   also blank shelves whose serials are no longer in the sheet
+//             (default: never blank a shelf, only fill/correct it)
+//   max=N     stop after N tasks (default 1000)
+//   range=... read an alternative A1 range (probe for tuning the sheet read)
 
 import crypto from "node:crypto";
 import { ASANA_API_BASE, config } from "@/lib/config";
@@ -56,12 +57,16 @@ export async function GET(req: Request): Promise<Response> {
   const dryRun = url.searchParams.get("dry") === "1";
   const allowClear = url.searchParams.get("clear") === "1";
   const max = Number(url.searchParams.get("max") ?? "1000") || 1000;
+  const rangeOverride = url.searchParams.get("range") ?? undefined;
 
   const startedAt = Date.now();
 
   let stockRows: string[][];
+  let sheetMs = 0;
   try {
-    stockRows = await readStockRows(true);
+    const t0 = Date.now();
+    stockRows = await readStockRows(true, rangeOverride);
+    sheetMs = Date.now() - t0;
   } catch (err) {
     console.error(`[${SERVICE}] Failed to read Google Sheet:`, errMessage(err));
     return Response.json({ ok: false, error: "sheet_read_failed" }, { status: 502 });
@@ -112,6 +117,7 @@ export async function GET(req: Request): Promise<Response> {
     allowClear,
     scanned,
     sheetRows: stockRows.length,
+    sheetMs,
     changed: changes.length,
     alreadyCorrect,
     noSerial,
@@ -124,7 +130,7 @@ export async function GET(req: Request): Promise<Response> {
   console.log(
     `[${SERVICE}] scanned=${scanned} changed=${changes.length} correct=${alreadyCorrect} ` +
       `noSerial=${noSerial} skippedBlank=${skippedBlank} failed=${failures.length} ` +
-      `dry=${dryRun} in ${summary.ms}ms`,
+      `sheetMs=${sheetMs} dry=${dryRun} in ${summary.ms}ms`,
   );
   return Response.json(summary);
 }
