@@ -67,15 +67,17 @@ function getSheetsClient() {
 // Range handling
 // ---------------------------------------------------------------------------
 //
-// An open-ended range ("'Tab '!A:B") makes the API walk the sheet's whole grid,
-// which on this spreadsheet took ~113s per read - far beyond Asana's 10s
-// webhook budget and the reason shelves stopped being written at all. Bounding
-// the range keeps the read proportional to the data that actually exists.
-const MAX_ROWS = Number(process.env.GOOGLE_SHEET_MAX_ROWS ?? "20000") || 20000;
+// Reading this stock tab is slow whatever we ask for - measured in production,
+// open-ended "'Conferencia de estoque '!A:B" returned 7074 rows in 113s and the
+// bounded "A1:B20000" took 281s for the same data. The time goes into the
+// spreadsheet recalculating on read, not into the range, so bounding is opt-in:
+// set GOOGLE_SHEET_MAX_ROWS to a row count to clamp an open-ended range.
+const MAX_ROWS = Number(process.env.GOOGLE_SHEET_MAX_ROWS ?? "0") || 0;
 
-/** "'Tab '!A:B" -> "'Tab '!A1:B20000". Ranges that already carry row numbers
- *  (or that name no columns at all) are left untouched. */
+/** "'Tab '!A:B" -> "'Tab '!A1:B<maxRows>", when clamping is enabled. Ranges
+ *  that already carry row numbers are left untouched. */
 export function boundRange(range: string, maxRows = MAX_ROWS): string {
+  if (!maxRows) return range;
   return range.replace(/!\s*([A-Z]+):([A-Z]+)\s*$/i, (_m, a, b) => `!${a}1:${b}${maxRows}`);
 }
 

@@ -27,8 +27,9 @@ import { lookupShelvesJoined, readStockRows, splitSerials } from "@/lib/sheets";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // Background processing runs after the response is sent but still counts
-// towards the function's wall clock, so give it room.
-export const maxDuration = 60;
+// towards the function's wall clock. A cold instance has to read the stock tab
+// first, which takes ~2 minutes on this spreadsheet, so keep the ceiling high.
+export const maxDuration = 300;
 
 const SERVICE = "asana-shelf-sync";
 
