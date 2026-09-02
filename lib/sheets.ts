@@ -63,19 +63,51 @@ function getSheetsClient() {
   return cachedClient;
 }
 
-/** Read the configured range once. Returns rows of [serial, shelf]. */
-export async function readStockRows(): Promise<string[][]> {
+// A single Asana action often produces several webhook deliveries within a few
+// seconds. Re-reading the whole stock tab for each one is the slowest step in
+// the pipeline, so keep the rows in module scope for a short window. The cache
+// lives per warm lambda instance; a stale window of 30s is well inside how fast
+// anyone can move a machine between shelves.
+const ROWS_TTL_MS = 30_000;
+let rowsCache: { rows: string[][]; at: number } | null = null;
+let rowsInFlight: Promise<string[][]> | null = null;
+
+/** Read the configured range. Returns rows of [serial, shelf]. */
+export async function readStockRows(force = false): Promise<string[][]> {
   if (!config.google.sheetId) {
     throw new Error("GOOGLE_SHEET_ID is not configured");
   }
-  const sheets = getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: config.google.sheetId,
-    range: config.google.sheetRange,
-    valueRenderOption: "UNFORMATTED_VALUE",
-    majorDimension: "ROWS",
-  });
-  return (res.data.values as string[][]) ?? [];
+  if (!force && rowsCache && Date.now() - rowsCache.at < ROWS_TTL_MS) {
+    return rowsCache.rows;
+  }
+  // Collapse concurrent readers onto one API call.
+  if (!force && rowsInFlight) return rowsInFlight;
+
+  const started = Date.now();
+  const promise = (async () => {
+    const sheets = getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.google.sheetId,
+      range: config.google.sheetRange,
+      valueRenderOption: "UNFORMATTED_VALUE",
+      majorDimension: "ROWS",
+    });
+    const rows = (res.data.values as string[][]) ?? [];
+    rowsCache = { rows, at: Date.now() };
+    console.log(
+      `[sheets] read ${rows.length} row(s) from "${config.google.sheetRange}" in ${
+        Date.now() - started
+      }ms`,
+    );
+    return rows;
+  })();
+
+  rowsInFlight = promise;
+  try {
+    return await promise;
+  } finally {
+    if (rowsInFlight === promise) rowsInFlight = null;
+  }
 }
 
 /**
