@@ -19,9 +19,12 @@
 //   clear=1   also blank shelves whose serials are no longer in the sheet
 //             (default: never blank a shelf, only fill/correct it)
 //   max=N     stop after N tasks (default 1000)
+//   async=1   ACK immediately and sweep in the background (for cron callers
+//             such as pg_net, which stop reading the response after seconds)
 //   range=... read an alternative A1 range (probe for tuning the sheet read)
 
 import crypto from "node:crypto";
+import { waitUntil } from "@vercel/functions";
 import { ASANA_API_BASE, config } from "@/lib/config";
 import {
   AsanaTask,
@@ -48,17 +51,45 @@ const LIST_OPT_FIELDS = [
   "custom_fields.enum_value.name",
 ].join(",");
 
+interface SweepOptions {
+  dryRun: boolean;
+  allowClear: boolean;
+  max: number;
+  rangeOverride?: string;
+}
+
 export async function GET(req: Request): Promise<Response> {
   if (!authorized(req)) {
     return new Response("Unauthorized", { status: 401 });
   }
 
   const url = new URL(req.url);
-  const dryRun = url.searchParams.get("dry") === "1";
-  const allowClear = url.searchParams.get("clear") === "1";
-  const max = Number(url.searchParams.get("max") ?? "1000") || 1000;
-  const rangeOverride = url.searchParams.get("range") ?? undefined;
+  const options: SweepOptions = {
+    dryRun: url.searchParams.get("dry") === "1",
+    allowClear: url.searchParams.get("clear") === "1",
+    max: Number(url.searchParams.get("max") ?? "1000") || 1000,
+    rangeOverride: url.searchParams.get("range") ?? undefined,
+  };
 
+  if (url.searchParams.get("async") === "1") {
+    waitUntil(
+      sweep(options).catch((err) =>
+        console.error(`[${SERVICE}] sweep failed:`, errMessage(err)),
+      ),
+    );
+    return Response.json({ ok: true, started: true });
+  }
+
+  const summary = await sweep(options);
+  return Response.json(summary, { status: summary.ok ? 200 : 502 });
+}
+
+// Vercel Cron issues GETs; POST is here so the sweep can also be triggered by
+// the existing pg_cron/pg_net jobs, which post.
+export const POST = GET;
+
+async function sweep(options: SweepOptions) {
+  const { dryRun, allowClear, max, rangeOverride } = options;
   const startedAt = Date.now();
 
   let stockRows: string[][];
@@ -69,7 +100,7 @@ export async function GET(req: Request): Promise<Response> {
     sheetMs = Date.now() - t0;
   } catch (err) {
     console.error(`[${SERVICE}] Failed to read Google Sheet:`, errMessage(err));
-    return Response.json({ ok: false, error: "sheet_read_failed" }, { status: 502 });
+    return { ok: false as const, error: "sheet_read_failed" };
   }
 
   const changes: Array<{ gid: string; name: string; from: string; to: string }> = [];
@@ -112,7 +143,7 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const summary = {
-    ok: true,
+    ok: true as const,
     dryRun,
     allowClear,
     scanned,
@@ -130,14 +161,15 @@ export async function GET(req: Request): Promise<Response> {
   console.log(
     `[${SERVICE}] scanned=${scanned} changed=${changes.length} correct=${alreadyCorrect} ` +
       `noSerial=${noSerial} skippedBlank=${skippedBlank} failed=${failures.length} ` +
-      `sheetMs=${sheetMs} dry=${dryRun} in ${summary.ms}ms`,
+      `sheetMs=${sheetMs} dry=${dryRun} in ${summary.ms}ms` +
+      (changes.length
+        ? ` | ${changes
+            .map((c) => `${c.gid} ${JSON.stringify(c.from)}->${JSON.stringify(c.to)}`)
+            .join("; ")}`
+        : ""),
   );
-  return Response.json(summary);
+  return summary;
 }
-
-// Vercel Cron issues GETs; POST is here so the sweep can also be triggered by
-// the existing pg_cron/pg_net jobs, which post.
-export const POST = GET;
 
 /** Page through the project's incomplete tasks. */
 async function* listOpenTasks(max: number): AsyncGenerator<AsanaTask> {
