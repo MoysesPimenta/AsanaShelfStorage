@@ -25,8 +25,8 @@ export function normalizeSerial(value: unknown): string {
  * spaces is preserved, so hyphenated serials like "ABC-123" stay intact.
  *
  * Blank tokens (from trailing/double separators) are dropped, but a non-empty
- * serial that simply isn't in the sheet is kept so it can produce an aligned
- * blank line in the output.
+ * serial that simply isn't in the sheet is kept so it still gets its own
+ * "SERIAL → ?" line in the output.
  */
 export function splitSerials(value: unknown): string[] {
   return String(value ?? "")
@@ -35,14 +35,48 @@ export function splitSerials(value: unknown): string[] {
     .filter((s) => s.length > 0);
 }
 
+// ---------------------------------------------------------------------------
+// Storage Shelf value
+// ---------------------------------------------------------------------------
+
+/** Asana rejects text custom-field values longer than this. */
+export const ASANA_TEXT_FIELD_MAX_CHARS = 1024;
+
+/** Between the serial and its shelf on each Storage Shelf line. */
+export const SERIAL_SHELF_SEPARATOR = " → ";
+
+/** Written in place of the shelf when a serial is not in the stock sheet. */
+export const SHELF_NOT_FOUND_MARKER = "?";
+
 /**
- * Look up shelves for one or more serials and join them, in input order, with
- * newlines. A serial that isn't found contributes an empty string (blank line),
- * keeping positions aligned with the serials. Returns "" when there are no
- * serials at all.
+ * Build the Storage Shelf value for a task's serials.
+ *
+ * One line per serial, in input order, each carrying the serial AND its shelf,
+ * so the field reads as a self-contained picking list and nobody has to scroll
+ * back to the Serial Number field to pair them up:
+ *
+ *   SH9Y3YLC37W → A3
+ *   C02XK1ABJG5H → ?      (serial not in the sheet)
+ *
+ * Rules:
+ * - No serial matches at all → "" (unchanged: the webhook clears the field like
+ *   the original XLOOKUP formula, and the backfill's non-destructive default
+ *   leaves a hand-typed shelf alone).
+ * - Asana caps text fields at ASANA_TEXT_FIELD_MAX_CHARS. If the serial+shelf
+ *   form would exceed it, fall back to the compact shelf-only list (the
+ *   pre-2026-09-18 format) so a task with very many machines still gets its
+ *   shelves instead of a rejected write.
  */
-export function lookupShelvesJoined(rows: string[][], serials: string[]): string {
-  return serials.map((s) => lookupShelf(rows, s)).join("\n");
+export function buildShelfFieldValue(rows: string[][], serials: string[]): string {
+  const hits = serials.map((serial) => ({ serial, shelf: lookupShelf(rows, serial) }));
+  if (!hits.some((h) => h.shelf !== "")) return "";
+
+  const detailed = hits
+    .map((h) => `${h.serial}${SERIAL_SHELF_SEPARATOR}${h.shelf || SHELF_NOT_FOUND_MARKER}`)
+    .join("\n");
+  if (detailed.length <= ASANA_TEXT_FIELD_MAX_CHARS) return detailed;
+
+  return hits.map((h) => h.shelf).join("\n");
 }
 
 let cachedClient: ReturnType<typeof google.sheets> | null = null;

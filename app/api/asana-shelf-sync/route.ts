@@ -22,7 +22,7 @@ import {
   readTextFieldValue,
   updateTaskCustomField,
 } from "@/lib/asana";
-import { lookupShelvesJoined, readStockRows, splitSerials } from "@/lib/sheets";
+import { buildShelfFieldValue, readStockRows, splitSerials } from "@/lib/sheets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -180,8 +180,9 @@ async function processTask(taskGid: string, stockRows: string[][]): Promise<void
     return;
   }
 
-  // One shelf per serial, in order, joined by newlines (blank line if missing).
-  const newShelf = lookupShelvesJoined(stockRows, serials);
+  // One "SERIAL → SHELF" line per serial, in order ("?" when the serial is not
+  // in the sheet); "" when no serial matches at all.
+  const newShelf = buildShelfFieldValue(stockRows, serials);
 
   if (shelvesEqual(currentShelf, newShelf)) {
     console.log(

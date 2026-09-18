@@ -2,6 +2,14 @@
 
 Automation that keeps an Asana task's **Storage Shelf** field in sync with a
 value looked up from a Google Sheet, based on the task's **Serial Number**.
+Each serial gets its own `SERIAL → SHELF` line, so the field reads as a
+self-contained picking list:
+
+```
+SH9Y3YLC37W → A3
+SFPWVD2R6RH → N3
+C02XK1ABJG5H → ?      <- serial not in the stock sheet
+```
 
 ```
 Asana task created/changed
@@ -11,7 +19,7 @@ Vercel  POST /api/asana-shelf-sync
         │  1. verify HMAC signature
         │  2. read Serial Number from the task
         │  3. XLOOKUP serial in Google Sheet (bottom-to-top, last match)
-        │  4. write the shelf into Storage Shelf (skip no-ops)
+        │  4. write "SERIAL → SHELF" lines into Storage Shelf (skip no-ops)
         ▼
 Asana task updated
 ```
@@ -123,11 +131,19 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 ## How it behaves (acceptance criteria)
 
 - Serial Number empty → task skipped.
-- Storage Shelf already equal to the looked-up value → skipped (no write).
-- Serial found → Storage Shelf set to the last matching row's shelf.
-- Serial not found → Storage Shelf cleared to `""` (matches the formula).
+- Storage Shelf already equal to the computed value → skipped (no write).
+- One `SERIAL → SHELF` line per serial, in the order they appear in Serial
+  Number (`SH9Y3YLC37W - Iphones` contributes `SH9Y3YLC37W → A3`). The shelf
+  is the **last** matching sheet row's (bottom-to-top, like the formula).
+- A serial that is not in the sheet gets `SERIAL → ?`, so it is obvious which
+  machine still lacks a stock entry, and the other lines stay filled.
+- **No** serial matches at all → Storage Shelf cleared to `""` (matches the
+  formula). The backfill sweep never blanks a shelf unless run with `clear=1`.
+- Asana text fields are capped at **1024 characters**. If the `SERIAL → SHELF`
+  form would exceed that, the field falls back to the compact shelf-only list
+  (one shelf per line, the pre-2026-09-18 format).
 - Updating Storage Shelf triggers another webhook, but the next run is a no-op
-  (computed shelf == current), so **no infinite loop**.
+  (computed value == current), so **no infinite loop**.
 - Invalid `X-Hook-Signature` → `401`.
 - All secrets stay in environment variables; only the handshake secret is
   logged, and only so you can copy it during setup.
@@ -141,7 +157,9 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 | `401 Invalid signature` on every event | `ASANA_WEBHOOK_SECRET` not set, wrong value, or not redeployed after setting it. |
 | Logs show `ASANA_PAT is not configured` | Set `ASANA_PAT` in Vercel and redeploy. |
 | Logs show `Failed to read Google Sheet` | Sheet not shared with the service account, wrong `GOOGLE_SHEET_ID`, wrong tab name/range, or Sheets API not enabled. |
-| Shelf always clears to blank | Serial not matching: check the tab name's trailing space and that column A/B are correct. |
+| Shelf always clears to blank | None of the serials match: check the tab name's trailing space and that column A/B are correct. |
+| A line reads `SERIAL → ?` | That serial is not in column A of the stock tab (the other serials on the task were found). |
+| Shelf shows bare shelves without serials on a big task | The `SERIAL → SHELF` form exceeded Asana's 1024-character text limit; the compact fallback was written. |
 | Nothing happens on edit | Webhook inactive or filtered. Run `scripts/list-asana-webhooks.sh` to inspect. |
 
 See `IMPLEMENTATION_NOTES.md` for design details and the outstanding setup

@@ -32,7 +32,7 @@ import {
   readTextFieldValue,
   updateTaskCustomField,
 } from "@/lib/asana";
-import { lookupShelvesJoined, readStockRows, splitSerials } from "@/lib/sheets";
+import { buildShelfFieldValue, readStockRows, splitSerials } from "@/lib/sheets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -118,7 +118,7 @@ async function sweep(options: SweepOptions) {
       continue;
     }
     const currentShelf = readTextFieldValue(findCustomField(task, config.asana.shelfFieldGid));
-    const newShelf = lookupShelvesJoined(stockRows, serials);
+    const newShelf = buildShelfFieldValue(stockRows, serials);
 
     if (equalIgnoringWhitespace(currentShelf, newShelf)) {
       alreadyCorrect++;

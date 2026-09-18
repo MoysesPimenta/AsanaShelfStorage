@@ -12,7 +12,7 @@ POST /api/asana-shelf-sync
         |  ---- response sent ----
         |  3. read the stock sheet (cached 5 min, stale-while-revalidate)
         |  4. XLOOKUP each serial, bottom-to-top
-        |  5. write Storage Shelf, skipping no-ops
+        |  5. write one "SERIAL → SHELF" line per serial, skipping no-ops
         v
 Asana task updated
 ```
@@ -23,6 +23,32 @@ cost Asana its delivery.
 A scheduled sweep (`/api/backfill`) reconciles the board with the sheet every
 15 minutes, so an event that never arrives is corrected within a quarter hour
 instead of being lost.
+
+## Storage Shelf format (since 2026-09-18)
+
+```
+SH9Y3YLC37W → A3
+SFPWVD2R6RH → N3
+C02XK1ABJG5H → ?
+```
+
+One line per serial, in Serial Number order, so a task with many machines can
+be picked without scrolling back to the Serial Number field to pair each shelf
+with its serial. `?` means that serial is not in column A of the stock tab.
+
+Rules the code follows (`buildShelfFieldValue` in `lib/sheets.ts`):
+
+| Situation | Written value |
+|---|---|
+| every serial found | `S1 → A3` / `S2 → N3` ... |
+| some serials missing | missing ones become `S → ?`, the rest stay filled |
+| **no** serial found | `""` (webhook clears; sweep leaves the field alone unless `clear=1`) |
+| `SERIAL → SHELF` form longer than Asana's 1024-char text limit | compact shelf-only list (old format) |
+
+Before 2026-09-18 the field held bare shelves, one per line, with a blank line
+for a missing serial. The first sweep after that deploy rewrites every open
+task still in the old format (a one-off burst of `changed=N` in its log line);
+the webhooks those writes raise are no-ops.
 
 ## The 2026-09-02 outage (why the design changed)
 
@@ -138,5 +164,7 @@ board correct until deliveries recover.
 | Shelves stop updating for hours | webhook `delivery_retry_count` / `next_attempt_after` (above) |
 | `ETIMEOUT ... within the timeout of 10000 ms` | something in the handler ran before the ACK, or the function cold-started slowly |
 | A single task never gets a shelf | runtime logs: `no serials parsed` dumps every custom field on the task |
-| Shelf blank though the serial exists | serial not in column A of the stock tab (last match wins, bottom-to-top) |
+| Shelf blank though the serial exists | none of the task's serials are in column A of the stock tab (last match wins, bottom-to-top) |
+| A line shows `SERIAL → ?` | that serial is missing from column A; the others were found |
+| Big task shows bare shelves, no serials | the detailed form exceeded Asana's 1024-char limit, compact fallback written |
 | Sheet read logged in the tens of seconds | spreadsheet recalculation - see the outage note above |

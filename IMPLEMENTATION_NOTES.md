@@ -85,4 +85,49 @@ need to change for any of them.
 - [ ] Run `scripts/create-asana-webhook.sh` with `ASANA_PAT` + `TARGET_URL`.
 - [ ] Copy `ASANA_WEBHOOK_SECRET` from Vercel runtime logs → env vars → redeploy.
 - [ ] Test by editing a task's Serial Number.
-```
+
+## Change log
+
+### 2026-09-18 — serial + shelf on every Storage Shelf line
+
+**What changed.** `lookupShelvesJoined` (one bare shelf per line, blank line
+when missing) was replaced by `buildShelfFieldValue` in `lib/sheets.ts`, which
+writes `SERIAL → SHELF` per line and `SERIAL → ?` for a serial that is not in
+the sheet. Both callers — the webhook (`app/api/asana-shelf-sync/route.ts`) and
+the sweep (`app/api/backfill/route.ts`) — use it; nothing else changed.
+
+**Why.** With several machines on one task the operator had to scroll between
+Serial Number and Storage Shelf to pair each shelf with its serial. The field is
+now a self-contained picking list.
+
+**Behaviour kept on purpose.**
+- "No serial matches" still yields `""`, so the webhook clears the field like
+  the original XLOOKUP formula and the sweep's non-destructive default
+  (`skippedBlank`) keeps protecting hand-typed shelves.
+- Bottom-to-top last-match lookup, `trim().toUpperCase()` matching, and the
+  `SERIAL - description` parsing are untouched; the serial is echoed as typed.
+- The anti-loop guard is unchanged: the value is deterministic, so the webhook
+  raised by our own write recomputes the same string and is a no-op.
+
+**New guard.** Asana text custom fields are limited to 1024 characters
+(developers.asana.com custom-fields guide). If the detailed form would exceed
+that, the compact shelf-only list is written instead of failing the PUT.
+
+**Verification.** `tsc --noEmit` clean for `app/` + `lib/`; `next build`
+succeeds (Linux, Node 22); 10 assertion checks on the pure function (single,
+multi, partial, none, real `SERIAL - description` input, last-match-wins,
+case-insensitive match, 1024-char fallback and non-fallback, determinism).
+Production check after deploy: the sweep's `changed=N` log line and webhook
+`updated:` lines should carry the new `SERIAL → SHELF` values with no errors.
+
+**Migration.** No data migration step: the 15-minute sweep detects every open
+task whose value differs from the computed one and rewrites it, so the board
+converges within one or two sweeps of the deploy.
+
+**Known gaps / follow-ups.**
+- `package-lock.json` in the repo predates `@vercel/functions` (Vercel's
+  `npm install` tolerates it). Commit the refreshed lockfile from a machine
+  with GitHub credentials so installs are reproducible.
+- The `no serials parsed` diagnostic log dumps every custom field of the task,
+  including customer address/phone; consider trimming it now that the field
+  location is known.
