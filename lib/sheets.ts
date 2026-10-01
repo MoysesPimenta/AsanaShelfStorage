@@ -130,20 +130,118 @@ type CacheEntry = { rows: string[][]; at: number };
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<string[][]>>();
 
-async function fetchRows(range: string): Promise<string[][]> {
-  const started = Date.now();
-  const sheets = getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({
+// Configured range -> range that actually resolved against the spreadsheet,
+// remembered per instance so a renamed tab costs one failed read, not one per
+// request. See resolveRenamedTab().
+const resolvedRanges = new Map<string, string>();
+
+async function getValues(range: string): Promise<string[][]> {
+  const res = await getSheetsClient().spreadsheets.values.get({
     spreadsheetId: config.google.sheetId,
     range,
     valueRenderOption: "UNFORMATTED_VALUE",
     majorDimension: "ROWS",
     fields: "values",
   });
-  const rows = (res.data.values as string[][]) ?? [];
+  return (res.data.values as string[][]) ?? [];
+}
+
+/** Rows are cached under the CONFIGURED range so readStockRows keeps hitting
+ *  the cache even when the read itself went to a resolved (renamed) tab. */
+async function fetchRows(range: string): Promise<string[][]> {
+  const started = Date.now();
+  let effective = resolvedRanges.get(range) ?? range;
+  let rows: string[][];
+  try {
+    rows = await getValues(effective);
+  } catch (err) {
+    if (!isUnknownRangeError(err)) throw err;
+    effective = await resolveRenamedTab(range);
+    resolvedRanges.set(range, effective);
+    rows = await getValues(effective);
+  }
   cache.set(range, { rows, at: Date.now() });
-  console.log(`[sheets] read ${rows.length} row(s) from "${range}" in ${Date.now() - started}ms`);
+  console.log(`[sheets] read ${rows.length} row(s) from "${effective}" in ${Date.now() - started}ms`);
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Tab-name drift
+// ---------------------------------------------------------------------------
+//
+// Google answers "Unable to parse range" when the tab in an A1 range does not
+// exist. That is exactly what happened when someone tidied the stock tab's
+// name from "Conferencia de estoque " (trailing space) to
+// "Conferencia de estoque": every read failed, no shelf was written, and the
+// only trace was an error-level log line. Cosmetic renames (whitespace, case,
+// accents) are now absorbed by matching the configured tab against the real
+// tab titles; anything else fails with the list of tabs that DO exist.
+
+function isUnknownRangeError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /unable to parse range/i.test(msg);
+}
+
+/** "'Tab '!A:B" -> { tab: "Tab ", cells: "A:B" }; "A:B" -> { tab: null, ... }. */
+export function splitA1Range(range: string): { tab: string | null; cells: string } {
+  const bang = range.lastIndexOf("!");
+  if (bang === -1) return { tab: null, cells: range };
+  const rawTab = range.slice(0, bang);
+  const cells = range.slice(bang + 1);
+  const quoted = rawTab.trim().match(/^'(.*)'$/);
+  return { tab: quoted ? quoted[1].replace(/''/g, "'") : rawTab, cells };
+}
+
+/** Quote a tab title for A1 notation ("O'Brien" -> "'O''Brien'"). */
+export function quoteTabTitle(title: string): string {
+  return `'${title.replace(/'/g, "''")}'`;
+}
+
+/** Fold the differences a human rename usually introduces. */
+export function normalizeTabTitle(title: string): string {
+  return title
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** The one real tab title matching `wanted` (exact first, then normalized);
+ *  null when nothing or more than one tab matches. */
+export function matchTabTitle(wanted: string, titles: string[]): string | null {
+  if (titles.includes(wanted)) return wanted;
+  const target = normalizeTabTitle(wanted);
+  const hits = titles.filter((t) => normalizeTabTitle(t) === target);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+async function resolveRenamedTab(range: string): Promise<string> {
+  const { tab, cells } = splitA1Range(range);
+  if (tab === null) throw new Error(`Unable to parse range: ${range}`);
+
+  const meta = await getSheetsClient().spreadsheets.get({
+    spreadsheetId: config.google.sheetId,
+    fields: "sheets.properties.title",
+  });
+  const titles = (meta.data.sheets ?? [])
+    .map((s) => s.properties?.title)
+    .filter((t): t is string => typeof t === "string");
+
+  const match = matchTabTitle(tab, titles);
+  if (!match) {
+    throw new Error(
+      `Tab ${JSON.stringify(tab)} not found in the spreadsheet (range ${JSON.stringify(range)}). ` +
+        `Existing tabs: ${titles.map((t) => JSON.stringify(t)).join(", ")}. ` +
+        `Fix GOOGLE_SHEET_RANGE.`,
+    );
+  }
+  const resolved = `${quoteTabTitle(match)}!${cells}`;
+  console.warn(
+    `[sheets] Tab ${JSON.stringify(tab)} no longer exists; reading ${JSON.stringify(resolved)} ` +
+      `instead. Update GOOGLE_SHEET_RANGE to silence this.`,
+  );
+  return resolved;
 }
 
 function refresh(range: string): Promise<string[][]> {

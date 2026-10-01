@@ -16,9 +16,10 @@ export const config = {
     // Private keys are often stored with escaped "\n"; convert to real newlines.
     privateKey: (process.env.GOOGLE_PRIVATE_KEY ?? "").replace(/\\n/g, "\n"),
     sheetId: process.env.GOOGLE_SHEET_ID ?? "",
-    // IMPORTANT: the source tab name currently has a TRAILING SPACE after
-    // "estoque". Preserve it unless the tab has been renamed.
-    sheetRange: process.env.GOOGLE_SHEET_RANGE ?? "Conferencia de estoque !A:B",
+    // Tab was "Conferencia de estoque " (trailing space) until ~2026-09; it is
+    // now "Conferencia de estoque". Whitespace/case/accent drift in the tab
+    // name is resolved at read time (lib/sheets.ts resolveRenamedTab).
+    sheetRange: process.env.GOOGLE_SHEET_RANGE ?? "'Conferencia de estoque'!A:B",
   },
 } as const;
 
