@@ -70,11 +70,14 @@ Set these in **Vercel → Project → Settings → Environment Variables** (and 
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | yes (secret) | Service account that can read the sheet |
 | `GOOGLE_PRIVATE_KEY` | yes (secret) | Escaped `\n` is auto-converted to newlines |
 | `GOOGLE_SHEET_ID` | yes | Spreadsheet ID from the sheet URL |
-| `GOOGLE_SHEET_RANGE` | default baked in | `Conferencia de estoque !A:B` (note trailing space in tab name) |
+| `GOOGLE_SHEET_RANGE` | default baked in | `'Conferencia de estoque'!A:B` |
 
-> The tab name currently appears to have a **trailing space** after
-> `estoque`. The default range preserves it. If the tab was renamed, override
-> `GOOGLE_SHEET_RANGE`.
+> The tab used to be `Conferencia de estoque ` (trailing space); it was
+> renamed to `Conferencia de estoque` around late September 2026. Cosmetic
+> differences between the configured tab and the real one (spaces, case,
+> accents) are resolved at read time and logged as a warning; a real rename
+> fails with the list of existing tabs, and `GOOGLE_SHEET_RANGE` must be
+> updated.
 
 ### Google service account setup
 
@@ -156,8 +159,8 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 | Webhook create returns the handshake never completes | Endpoint not reachable / not yet deployed, or it didn't echo `X-Hook-Secret`. |
 | `401 Invalid signature` on every event | `ASANA_WEBHOOK_SECRET` not set, wrong value, or not redeployed after setting it. |
 | Logs show `ASANA_PAT is not configured` | Set `ASANA_PAT` in Vercel and redeploy. |
-| Logs show `Failed to read Google Sheet` | Sheet not shared with the service account, wrong `GOOGLE_SHEET_ID`, wrong tab name/range, or Sheets API not enabled. |
-| Shelf always clears to blank | None of the serials match: check the tab name's trailing space and that column A/B are correct. |
+| Logs show `Failed to read Google Sheet` | Sheet not shared with the service account, wrong `GOOGLE_SHEET_ID`, wrong tab name/range, or Sheets API not enabled. A `Tab "…" not found … Existing tabs: …` message means the tab was renamed: set `GOOGLE_SHEET_RANGE` to one of the listed tabs. |
+| Shelf always clears to blank | None of the serials match: check that column A (serial) / B (shelf) of the stock tab are correct. |
 | A line reads `SERIAL → ?` | That serial is not in column A of the stock tab (the other serials on the task were found). |
 | Shelf shows bare shelves without serials on a big task | The `SERIAL → SHELF` form exceeded Asana's 1024-character text limit; the compact fallback was written. |
 | Nothing happens on edit | Webhook inactive or filtered. Run `scripts/list-asana-webhooks.sh` to inspect. |

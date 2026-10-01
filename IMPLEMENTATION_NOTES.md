@@ -65,8 +65,11 @@ actions** that require those secrets. See the checklist at the bottom.
   this is fine; a very large batch with many sequential Asana reads/writes could
   approach the limit. If that ever happens, switch to acknowledging `200`
   immediately and processing via a queue/background function.
-- The tab name trailing space is assumed present (per the formula). If the tab
-  is renamed, set `GOOGLE_SHEET_RANGE` accordingly.
+- Tab-name drift: the stock tab lost its trailing space (~late Sept 2026) and
+  every read failed with `Unable to parse range`. Since 2026-10-01 the reader
+  matches the configured tab against the spreadsheet's real tab titles
+  (ignoring whitespace, case and accents) and logs a warning; a real rename
+  still needs `GOOGLE_SHEET_RANGE` updated (the error lists existing tabs).
 - Serial comparison is `trim().toUpperCase()`. If the real data needs different
   normalization (e.g. stripping leading zeros), adjust `normalizeSerial`.
 
@@ -80,7 +83,7 @@ need to change for any of them.
 - [ ] `GOOGLE_PRIVATE_KEY` — service account private key (share the sheet with
       this account; enable Sheets API).
 - [ ] `GOOGLE_SHEET_ID` — the spreadsheet ID.
-- [ ] Confirm `GOOGLE_SHEET_RANGE` (default `Conferencia de estoque !A:B`).
+- [ ] Confirm `GOOGLE_SHEET_RANGE` (default `'Conferencia de estoque'!A:B`).
 - [ ] Deploy with `ASANA_WEBHOOK_SECRET` empty.
 - [ ] Run `scripts/create-asana-webhook.sh` with `ASANA_PAT` + `TARGET_URL`.
 - [ ] Copy `ASANA_WEBHOOK_SECRET` from Vercel runtime logs → env vars → redeploy.

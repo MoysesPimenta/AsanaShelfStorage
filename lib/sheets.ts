@@ -201,7 +201,7 @@ export function quoteTabTitle(title: string): string {
 export function normalizeTabTitle(title: string): string {
   return title
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/\p{M}/gu, "") // combining marks left by NFD (accents)
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
