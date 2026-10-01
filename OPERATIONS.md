@@ -88,6 +88,40 @@ automation pointed at a lightweight serial+shelf copy), reads would never
 spike and shelves would always land within a second. Point it elsewhere with
 `GOOGLE_SHEET_ID` / `GOOGLE_SHEET_RANGE`; no code change needed.
 
+## The 2026-10-01 tab-rename outage
+
+Symptom: Storage Shelf stopped being filled on new/edited tasks; no runtime
+*errors* in Vercel (the failure was only an error-level `console.error`).
+
+Cause: the stock tab was renamed from `Conferencia de estoque ` (trailing
+space) to `Conferencia de estoque`. `GOOGLE_SHEET_RANGE` still pointed at the
+old name, so every read - webhook and sweep - failed before touching Asana:
+
+```
+[asana-shelf-backfill] Failed to read Google Sheet:
+  Unable to parse range: 'Conferencia de estoque '!A:B
+```
+
+Confirmed by probing `/api/backfill?dry=1&range=...` from pg_net: the old
+name fails, `'Conferencia de estoque'!A:B` reads 10,058 rows in ~0.8s. Onset
+is unknown - Vercel only keeps about a day of runtime logs and every sweep in
+that window failed.
+
+Fix: the reader now resolves tab-name drift itself. On `Unable to parse
+range` it lists the spreadsheet's tabs, matches the configured one ignoring
+whitespace, case and accents, retries, and remembers the resolved range for
+the instance (`resolveRenamedTab` in `lib/sheets.ts`). A tab that was really
+renamed still fails, but the error now lists the tabs that exist. The code
+default for `GOOGLE_SHEET_RANGE` is the new name; the Vercel env var should be
+updated to `'Conferencia de estoque'!A:B` to silence the warning.
+
+Recovery (commit `8cd021b`, deploy `dpl_HbXtSGJVFjFZmJJvUZKeRfppQn61`): the
+first sweep logged the resolver warning, read 10,068 rows and reported
+`scanned=76 changed=14 correct=57 noSerial=5 failed=0` - 11 tasks had an empty
+Storage Shelf and 3 showed a stale shelf (machines that had moved). The 14
+webhook echoes all logged `already correct`, so deliveries were flowing the
+whole time; only the sheet read was broken.
+
 ## /api/backfill
 
 Reconciles every **open** task in the project with the stock sheet.
@@ -168,3 +202,5 @@ board correct until deliveries recover.
 | A line shows `SERIAL → ?` | that serial is missing from column A; the others were found |
 | Big task shows bare shelves, no serials | the detailed form exceeded Asana's 1024-char limit, compact fallback written |
 | Sheet read logged in the tens of seconds | spreadsheet recalculation - see the outage note above |
+| No shelves anywhere; backfill logs `Failed to read Google Sheet: Unable to parse range` | the stock tab was renamed - see the 2026-10-01 note |
+| `[sheets] Tab "…" no longer exists; reading "…" instead` | tab name drifted cosmetically and was auto-resolved; update `GOOGLE_SHEET_RANGE` to the new name |
