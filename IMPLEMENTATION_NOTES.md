@@ -116,6 +116,13 @@ now a self-contained picking list.
 (developers.asana.com custom-fields guide). If the detailed form would exceed
 that, the compact shelf-only list is written instead of failing the PUT.
 
+**2026-10-07: grouped-by-shelf tier before the compact fallback.** A 70-serial
+order (Asana task 1219180264032220) needed ~1290 chars in the detailed form, so
+it got bare shelves and lost the serial pairing. `buildShelfFieldValue` now
+tries a middle form first, one line per shelf in first-seen order
+(`S1, S2, S3 → K3`, missing serials grouped under `?`), which writes each shelf
+once; that task fits in ~1020 chars. The compact list remains the last resort.
+
 **Verification.** `tsc --noEmit` clean for `app/` + `lib/`; `next build`
 succeeds (Linux, Node 22); 10 assertion checks on the pure function (single,
 multi, partial, none, real `SERIAL - description` input, last-match-wins,

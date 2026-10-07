@@ -143,8 +143,9 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 - **No** serial matches at all → Storage Shelf cleared to `""` (matches the
   formula). The backfill sweep never blanks a shelf unless run with `clear=1`.
 - Asana text fields are capped at **1024 characters**. If the `SERIAL → SHELF`
-  form would exceed that, the field falls back to the compact shelf-only list
-  (one shelf per line, the pre-2026-09-18 format).
+  form would exceed that, serials are grouped by shelf, one line per shelf
+  (`S1, S2, S3 → K3`). Only if that is still too long does the field fall back
+  to the compact shelf-only list (one shelf per line, the pre-2026-09-18 format).
 - Updating Storage Shelf triggers another webhook, but the next run is a no-op
   (computed value == current), so **no infinite loop**.
 - Invalid `X-Hook-Signature` → `401`.
@@ -162,7 +163,8 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 | Logs show `Failed to read Google Sheet` | Sheet not shared with the service account, wrong `GOOGLE_SHEET_ID`, wrong tab name/range, or Sheets API not enabled. A `Tab "…" not found … Existing tabs: …` message means the tab was renamed: set `GOOGLE_SHEET_RANGE` to one of the listed tabs. |
 | Shelf always clears to blank | None of the serials match: check that column A (serial) / B (shelf) of the stock tab are correct. |
 | A line reads `SERIAL → ?` | That serial is not in column A of the stock tab (the other serials on the task were found). |
-| Shelf shows bare shelves without serials on a big task | The `SERIAL → SHELF` form exceeded Asana's 1024-character text limit; the compact fallback was written. |
+| Big task shows `S1, S2 → K3` lines | The one-per-serial form exceeded Asana's 1024-character text limit, so serials were grouped by shelf. |
+| Shelf shows bare shelves without serials on a big task | Even the grouped form exceeded 1024 characters; the compact fallback was written. |
 | Nothing happens on edit | Webhook inactive or filtered. Run `scripts/list-asana-webhooks.sh` to inspect. |
 
 See `IMPLEMENTATION_NOTES.md` for design details and the outstanding setup

@@ -63,9 +63,16 @@ export const SHELF_NOT_FOUND_MARKER = "?";
  *   the original XLOOKUP formula, and the backfill's non-destructive default
  *   leaves a hand-typed shelf alone).
  * - Asana caps text fields at ASANA_TEXT_FIELD_MAX_CHARS. If the serial+shelf
- *   form would exceed it, fall back to the compact shelf-only list (the
- *   pre-2026-09-18 format) so a task with very many machines still gets its
- *   shelves instead of a rejected write.
+ *   form would exceed it, group the serials by shelf instead, one line per
+ *   shelf in first-seen order, which keeps every serial paired with its shelf
+ *   while writing each shelf only once:
+ *
+ *     SJVJJV6614L, SM199JRDWPG, SJ4LVWGMFC7 → K3
+ *     SDYCD2D69WC, SL4CMWYR3F4 → K4
+ *
+ * - Only if even the grouped form is too long, fall back to the compact
+ *   shelf-only list (the pre-2026-09-18 format) so a task with very many
+ *   machines still gets its shelves instead of a rejected write.
  */
 export function buildShelfFieldValue(rows: string[][], serials: string[]): string {
   const hits = serials.map((serial) => ({ serial, shelf: lookupShelf(rows, serial) }));
@@ -75,6 +82,18 @@ export function buildShelfFieldValue(rows: string[][], serials: string[]): strin
     .map((h) => `${h.serial}${SERIAL_SHELF_SEPARATOR}${h.shelf || SHELF_NOT_FOUND_MARKER}`)
     .join("\n");
   if (detailed.length <= ASANA_TEXT_FIELD_MAX_CHARS) return detailed;
+
+  const byShelf = new Map<string, string[]>();
+  for (const h of hits) {
+    const shelf = h.shelf.trim() || SHELF_NOT_FOUND_MARKER;
+    const group = byShelf.get(shelf);
+    if (group) group.push(h.serial);
+    else byShelf.set(shelf, [h.serial]);
+  }
+  const grouped = Array.from(byShelf, ([shelf, group]) =>
+    `${group.join(", ")}${SERIAL_SHELF_SEPARATOR}${shelf}`,
+  ).join("\n");
+  if (grouped.length <= ASANA_TEXT_FIELD_MAX_CHARS) return grouped;
 
   return hits.map((h) => h.shelf).join("\n");
 }

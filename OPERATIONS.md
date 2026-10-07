@@ -43,7 +43,8 @@ Rules the code follows (`buildShelfFieldValue` in `lib/sheets.ts`):
 | every serial found | `S1 → A3` / `S2 → N3` ... |
 | some serials missing | missing ones become `S → ?`, the rest stay filled |
 | **no** serial found | `""` (webhook clears; sweep leaves the field alone unless `clear=1`) |
-| `SERIAL → SHELF` form longer than Asana's 1024-char text limit | compact shelf-only list (old format) |
+| `SERIAL → SHELF` form longer than Asana's 1024-char text limit | grouped by shelf: `S1, S2, S3 → K3`, one line per shelf |
+| grouped form also longer than 1024 chars | compact shelf-only list (old format) |
 
 Before 2026-09-18 the field held bare shelves, one per line, with a blank line
 for a missing serial. The first sweep after that deploy rewrites every open
@@ -200,7 +201,8 @@ board correct until deliveries recover.
 | A single task never gets a shelf | runtime logs: `no serials parsed` dumps every custom field on the task |
 | Shelf blank though the serial exists | none of the task's serials are in column A of the stock tab (last match wins, bottom-to-top) |
 | A line shows `SERIAL → ?` | that serial is missing from column A; the others were found |
-| Big task shows bare shelves, no serials | the detailed form exceeded Asana's 1024-char limit, compact fallback written |
+| Big task shows `S1, S2 → K3` lines | the one-per-serial form exceeded Asana's 1024-char limit, so serials were grouped by shelf |
+| Big task shows bare shelves, no serials | even the grouped form exceeded 1024 chars, compact fallback written |
 | Sheet read logged in the tens of seconds | spreadsheet recalculation - see the outage note above |
 | No shelves anywhere; backfill logs `Failed to read Google Sheet: Unable to parse range` | the stock tab was renamed - see the 2026-10-01 note |
 | `[sheets] Tab "…" no longer exists; reading "…" instead` | tab name drifted cosmetically and was auto-resolved; update `GOOGLE_SHEET_RANGE` to the new name |
