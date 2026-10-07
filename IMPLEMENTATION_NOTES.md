@@ -123,6 +123,15 @@ tries a middle form first, one line per shelf in first-seen order
 (`S1, S2, S3 → K3`, missing serials grouped under `?`), which writes each shelf
 once; that task fits in ~1020 chars. The compact list remains the last resort.
 
+**2026-10-07 (later): shelf-first grouping for every task.** Moyses found the
+`S1, S2 → K3` lines hard to read once Asana wrapped them, and wanted grouping
+from the start. Every task now gets a `SHELF (n)` heading per shelf, one serial
+per line beneath it and a blank line between shelves; shelves in natural order
+(`localeCompare` numeric), serials in task order, missing serials last under
+`NOT IN SHEET`. Over 1024 chars it drops the counts, then the blank lines, then
+falls back to the compact list. The 70-serial Asaas task fits without counts
+(~950 chars).
+
 **Verification.** `tsc --noEmit` clean for `app/` + `lib/`; `next build`
 succeeds (Linux, Node 22); 10 assertion checks on the pure function (single,
 multi, partial, none, real `SERIAL - description` input, last-match-wins,

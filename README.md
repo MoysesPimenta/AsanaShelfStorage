@@ -2,13 +2,19 @@
 
 Automation that keeps an Asana task's **Storage Shelf** field in sync with a
 value looked up from a Google Sheet, based on the task's **Serial Number**.
-Each serial gets its own `SERIAL → SHELF` line, so the field reads as a
-self-contained picking list:
+Serials are grouped under their shelf, shelves in natural order, so the field
+reads as a picking list walked shelf by shelf:
 
 ```
-SH9Y3YLC37W → A3
-SFPWVD2R6RH → N3
-C02XK1ABJG5H → ?      <- serial not in the stock sheet
+A3 (2)
+SH9Y3YLC37W
+SFPWVD2R6RH
+
+N3 (1)
+SC6P9N7JPMY
+
+NOT IN SHEET (1)
+C02XK1ABJG5H
 ```
 
 ```
@@ -19,7 +25,7 @@ Vercel  POST /api/asana-shelf-sync
         │  1. verify HMAC signature
         │  2. read Serial Number from the task
         │  3. XLOOKUP serial in Google Sheet (bottom-to-top, last match)
-        │  4. write "SERIAL → SHELF" lines into Storage Shelf (skip no-ops)
+        │  4. write serials grouped by shelf into Storage Shelf (skip no-ops)
         ▼
 Asana task updated
 ```
@@ -135,17 +141,19 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 
 - Serial Number empty → task skipped.
 - Storage Shelf already equal to the computed value → skipped (no write).
-- One `SERIAL → SHELF` line per serial, in the order they appear in Serial
-  Number (`SH9Y3YLC37W - Iphones` contributes `SH9Y3YLC37W → A3`). The shelf
-  is the **last** matching sheet row's (bottom-to-top, like the formula).
-- A serial that is not in the sheet gets `SERIAL → ?`, so it is obvious which
-  machine still lacks a stock entry, and the other lines stay filled.
+- Serials are grouped under a `SHELF (count)` heading, one serial per line, a
+  blank line between shelves. Shelves sort naturally (`B2` before `B10`);
+  serials keep their Serial Number order (`SH9Y3YLC37W - Iphones` contributes
+  `SH9Y3YLC37W`). The shelf is the **last** matching sheet row's
+  (bottom-to-top, like the formula).
+- Serials that are not in the sheet are listed last under `NOT IN SHEET`, so it
+  is obvious which machine still lacks a stock entry.
 - **No** serial matches at all → Storage Shelf cleared to `""` (matches the
   formula). The backfill sweep never blanks a shelf unless run with `clear=1`.
-- Asana text fields are capped at **1024 characters**. If the `SERIAL → SHELF`
-  form would exceed that, serials are grouped by shelf, one line per shelf
-  (`S1, S2, S3 → K3`). Only if that is still too long does the field fall back
-  to the compact shelf-only list (one shelf per line, the pre-2026-09-18 format).
+- Asana text fields are capped at **1024 characters**. A big order first drops
+  the counts, then the blank lines. Only if that is still too long does the
+  field fall back to the compact shelf-only list (one shelf per line, the
+  pre-2026-09-18 format).
 - Updating Storage Shelf triggers another webhook, but the next run is a no-op
   (computed value == current), so **no infinite loop**.
 - Invalid `X-Hook-Signature` → `401`.
@@ -162,9 +170,9 @@ the dashboard (Settings → Environment Variables) before the production deploy.
 | Logs show `ASANA_PAT is not configured` | Set `ASANA_PAT` in Vercel and redeploy. |
 | Logs show `Failed to read Google Sheet` | Sheet not shared with the service account, wrong `GOOGLE_SHEET_ID`, wrong tab name/range, or Sheets API not enabled. A `Tab "…" not found … Existing tabs: …` message means the tab was renamed: set `GOOGLE_SHEET_RANGE` to one of the listed tabs. |
 | Shelf always clears to blank | None of the serials match: check that column A (serial) / B (shelf) of the stock tab are correct. |
-| A line reads `SERIAL → ?` | That serial is not in column A of the stock tab (the other serials on the task were found). |
-| Big task shows `S1, S2 → K3` lines | The one-per-serial form exceeded Asana's 1024-character text limit, so serials were grouped by shelf. |
-| Shelf shows bare shelves without serials on a big task | Even the grouped form exceeded 1024 characters; the compact fallback was written. |
+| Serials under `NOT IN SHEET` | Those serials are not in column A of the stock tab (the others on the task were found). |
+| Big task has no counts or no blank lines | The full layout exceeded Asana's 1024-character text limit, so a tighter one was written. |
+| Shelf shows bare shelves without serials on a big task | Even the tightest grouped layout exceeded 1024 characters; the compact fallback was written. |
 | Nothing happens on edit | Webhook inactive or filtered. Run `scripts/list-asana-webhooks.sh` to inspect. |
 
 See `IMPLEMENTATION_NOTES.md` for design details and the outstanding setup

@@ -25,8 +25,8 @@ export function normalizeSerial(value: unknown): string {
  * spaces is preserved, so hyphenated serials like "ABC-123" stay intact.
  *
  * Blank tokens (from trailing/double separators) are dropped, but a non-empty
- * serial that simply isn't in the sheet is kept so it still gets its own
- * "SERIAL → ?" line in the output.
+ * serial that simply isn't in the sheet is kept so it is still listed in the
+ * output, under SHELF_NOT_FOUND_HEADING.
  */
 export function splitSerials(value: unknown): string[] {
   return String(value ?? "")
@@ -42,60 +42,67 @@ export function splitSerials(value: unknown): string[] {
 /** Asana rejects text custom-field values longer than this. */
 export const ASANA_TEXT_FIELD_MAX_CHARS = 1024;
 
-/** Between the serial and its shelf on each Storage Shelf line. */
-export const SERIAL_SHELF_SEPARATOR = " → ";
-
-/** Written in place of the shelf when a serial is not in the stock sheet. */
-export const SHELF_NOT_FOUND_MARKER = "?";
+/** Heading for the serials that are not in the stock sheet (listed last). */
+export const SHELF_NOT_FOUND_HEADING = "NOT IN SHEET";
 
 /**
  * Build the Storage Shelf value for a task's serials.
  *
- * One line per serial, in input order, each carrying the serial AND its shelf,
- * so the field reads as a self-contained picking list and nobody has to scroll
- * back to the Serial Number field to pair them up:
+ * Serials are grouped under their shelf, shelves in natural order (A5, B2, B10,
+ * ... CAIXA ...), serials keeping their task order, a blank line between shelves,
+ * so the field reads as a picking list walked shelf by shelf:
  *
- *   SH9Y3YLC37W → A3
- *   C02XK1ABJG5H → ?      (serial not in the sheet)
+ *   K3 (2)
+ *   SJVJJV6614L
+ *   SM199JRDWPG
+ *
+ *   K4 (1)
+ *   SDYCD2D69WC
+ *
+ *   NOT IN SHEET (1)
+ *   C02XK1ABJG5H
  *
  * Rules:
  * - No serial matches at all → "" (unchanged: the webhook clears the field like
  *   the original XLOOKUP formula, and the backfill's non-destructive default
  *   leaves a hand-typed shelf alone).
- * - Asana caps text fields at ASANA_TEXT_FIELD_MAX_CHARS. If the serial+shelf
- *   form would exceed it, group the serials by shelf instead, one line per
- *   shelf in first-seen order, which keeps every serial paired with its shelf
- *   while writing each shelf only once:
- *
- *     SJVJJV6614L, SM199JRDWPG, SJ4LVWGMFC7 → K3
- *     SDYCD2D69WC, SL4CMWYR3F4 → K4
- *
- * - Only if even the grouped form is too long, fall back to the compact
- *   shelf-only list (the pre-2026-09-18 format) so a task with very many
- *   machines still gets its shelves instead of a rejected write.
+ * - Asana caps text fields at ASANA_TEXT_FIELD_MAX_CHARS. Big orders step down
+ *   through tighter layouts of the same grouping until one fits: drop the
+ *   counts, then the blank lines. Only if none fits, write the compact
+ *   shelf-only list (the pre-2026-09-18 format) rather than have the write
+ *   rejected.
  */
 export function buildShelfFieldValue(rows: string[][], serials: string[]): string {
   const hits = serials.map((serial) => ({ serial, shelf: lookupShelf(rows, serial) }));
   if (!hits.some((h) => h.shelf !== "")) return "";
 
-  const detailed = hits
-    .map((h) => `${h.serial}${SERIAL_SHELF_SEPARATOR}${h.shelf || SHELF_NOT_FOUND_MARKER}`)
-    .join("\n");
-  if (detailed.length <= ASANA_TEXT_FIELD_MAX_CHARS) return detailed;
-
   const byShelf = new Map<string, string[]>();
   for (const h of hits) {
-    const shelf = h.shelf.trim() || SHELF_NOT_FOUND_MARKER;
+    const shelf = h.shelf.trim() || SHELF_NOT_FOUND_HEADING;
     const group = byShelf.get(shelf);
     if (group) group.push(h.serial);
     else byShelf.set(shelf, [h.serial]);
   }
-  const grouped = Array.from(byShelf, ([shelf, group]) =>
-    `${group.join(", ")}${SERIAL_SHELF_SEPARATOR}${shelf}`,
-  ).join("\n");
-  if (grouped.length <= ASANA_TEXT_FIELD_MAX_CHARS) return grouped;
+  const groups = Array.from(byShelf).sort(([a], [b]) => compareShelves(a, b));
+
+  const layouts: Array<(shelf: string, group: string[]) => string> = [
+    (shelf, group) => `${shelf} (${group.length})\n${group.join("\n")}\n`,
+    (shelf, group) => `${shelf}\n${group.join("\n")}\n`,
+    (shelf, group) => `${shelf}\n${group.join("\n")}`,
+  ];
+  for (const layout of layouts) {
+    const value = groups.map(([shelf, group]) => layout(shelf, group)).join("\n").trimEnd();
+    if (value.length <= ASANA_TEXT_FIELD_MAX_CHARS) return value;
+  }
 
   return hits.map((h) => h.shelf).join("\n");
+}
+
+/** Natural order ("B2" before "B10"), case-insensitive, missing serials last. */
+function compareShelves(a: string, b: string): number {
+  if (a === SHELF_NOT_FOUND_HEADING) return b === SHELF_NOT_FOUND_HEADING ? 0 : 1;
+  if (b === SHELF_NOT_FOUND_HEADING) return -1;
+  return a.localeCompare(b, "en", { numeric: true, sensitivity: "base" });
 }
 
 let cachedClient: ReturnType<typeof google.sheets> | null = null;
