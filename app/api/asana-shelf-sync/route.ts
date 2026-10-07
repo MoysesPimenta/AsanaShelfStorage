@@ -180,8 +180,8 @@ async function processTask(taskGid: string, stockRows: string[][]): Promise<void
     return;
   }
 
-  // One "SERIAL → SHELF" line per serial, in order ("?" when the serial is not
-  // in the sheet); "" when no serial matches at all.
+  // Serials grouped under their shelf (see buildShelfFieldValue); "" when no
+  // serial matches at all.
   const newShelf = buildShelfFieldValue(stockRows, serials);
 
   if (shelvesEqual(currentShelf, newShelf)) {

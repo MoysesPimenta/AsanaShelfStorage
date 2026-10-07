@@ -12,7 +12,7 @@ POST /api/asana-shelf-sync
         |  ---- response sent ----
         |  3. read the stock sheet (cached 5 min, stale-while-revalidate)
         |  4. XLOOKUP each serial, bottom-to-top
-        |  5. write one "SERIAL → SHELF" line per serial, skipping no-ops
+        |  5. write serials grouped by shelf, skipping no-ops
         v
 Asana task updated
 ```
@@ -24,29 +24,36 @@ A scheduled sweep (`/api/backfill`) reconciles the board with the sheet every
 15 minutes, so an event that never arrives is corrected within a quarter hour
 instead of being lost.
 
-## Storage Shelf format (since 2026-09-18)
+## Storage Shelf format (since 2026-10-07)
 
 ```
-SH9Y3YLC37W → A3
-SFPWVD2R6RH → N3
-C02XK1ABJG5H → ?
+A3 (2)
+SH9Y3YLC37W
+SFPWVD2R6RH
+
+N3 (1)
+SC6P9N7JPMY
+
+NOT IN SHEET (1)
+C02XK1ABJG5H
 ```
 
-One line per serial, in Serial Number order, so a task with many machines can
-be picked without scrolling back to the Serial Number field to pair each shelf
-with its serial. `?` means that serial is not in column A of the stock tab.
+Serials grouped under their shelf, shelves in natural order, serials in Serial
+Number order, so a task with many machines is picked shelf by shelf.
+`NOT IN SHEET` lists serials missing from column A of the stock tab.
 
 Rules the code follows (`buildShelfFieldValue` in `lib/sheets.ts`):
 
 | Situation | Written value |
 |---|---|
-| every serial found | `S1 → A3` / `S2 → N3` ... |
-| some serials missing | missing ones become `S → ?`, the rest stay filled |
+| every serial found | `A3 (2)` heading, its serials below, blank line, next shelf ... |
+| some serials missing | missing ones listed last under `NOT IN SHEET (n)` |
 | **no** serial found | `""` (webhook clears; sweep leaves the field alone unless `clear=1`) |
-| `SERIAL → SHELF` form longer than Asana's 1024-char text limit | grouped by shelf: `S1, S2, S3 → K3`, one line per shelf |
-| grouped form also longer than 1024 chars | compact shelf-only list (old format) |
+| longer than Asana's 1024-char text limit | same grouping without counts, then also without blank lines |
+| still longer than 1024 chars | compact shelf-only list (old format) |
 
-Before 2026-09-18 the field held bare shelves, one per line, with a blank line
+From 2026-09-18 to 2026-10-07 the field held one `SERIAL → SHELF` line per
+serial. Before 2026-09-18 it held bare shelves, one per line, with a blank line
 for a missing serial. The first sweep after that deploy rewrites every open
 task still in the old format (a one-off burst of `changed=N` in its log line);
 the webhooks those writes raise are no-ops.
@@ -200,9 +207,9 @@ board correct until deliveries recover.
 | `ETIMEOUT ... within the timeout of 10000 ms` | something in the handler ran before the ACK, or the function cold-started slowly |
 | A single task never gets a shelf | runtime logs: `no serials parsed` dumps every custom field on the task |
 | Shelf blank though the serial exists | none of the task's serials are in column A of the stock tab (last match wins, bottom-to-top) |
-| A line shows `SERIAL → ?` | that serial is missing from column A; the others were found |
-| Big task shows `S1, S2 → K3` lines | the one-per-serial form exceeded Asana's 1024-char limit, so serials were grouped by shelf |
-| Big task shows bare shelves, no serials | even the grouped form exceeded 1024 chars, compact fallback written |
+| Serials under `NOT IN SHEET` | those serials are missing from column A; the others were found |
+| Big task has no counts or no blank lines | the full layout exceeded Asana's 1024-char limit, a tighter one was written |
+| Big task shows bare shelves, no serials | even the tightest grouped layout exceeded 1024 chars, compact fallback written |
 | Sheet read logged in the tens of seconds | spreadsheet recalculation - see the outage note above |
 | No shelves anywhere; backfill logs `Failed to read Google Sheet: Unable to parse range` | the stock tab was renamed - see the 2026-10-01 note |
 | `[sheets] Tab "…" no longer exists; reading "…" instead` | tab name drifted cosmetically and was auto-resolved; update `GOOGLE_SHEET_RANGE` to the new name |
